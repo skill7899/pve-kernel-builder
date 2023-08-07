@@ -1,7 +1,8 @@
+diff --git a/drivers/nvme/host/pci.c b/drivers/nvme/host/pci.c
+index 989f31471da6..8691051a105b 100644
 --- a/drivers/nvme/host/pci.c
 +++ b/drivers/nvme/host/pci.c
-@@ -3478,6 +3478,8 @@ 
-static const struct pci_device_id nvme_id_table[] = {
+@@ -3478,6 +3478,8 @@ static const struct pci_device_id nvme_id_table[] = {
         { PCI_DEVICE(0x1e4B, 0x1002),   /* MAXIO MAP1002 */
                 .driver_data = NVME_QUIRK_BOGUS_NID, },
         { PCI_DEVICE(0x1e4B, 0x1202),   /* MAXIO MAP1202 */
