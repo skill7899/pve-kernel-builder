@@ -26,6 +26,12 @@ on:
       token:
         description: 'Token used in privileged operations'
         required: false
+      email_connection_url:
+        description: 'Connection string used to connect to SMTP server'
+        required: true
+      email_recipients:
+        description: 'List of recipients for notification emails'
+        required: true
 
 env:
   DEBIAN_FRONTEND: noninteractive
@@ -37,9 +43,8 @@ jobs:
   check-for-new-kernel:
     name: Check for new kernel release
     runs-on: ubuntu-latest
-    #if: github.event.repository.owner.id == github.event.sender.id
     outputs:
-      new-kernel-available: ${{ steps.check-version.outputs.status == 'needs-update' }}
+      new-kernel-available: ${{ steps.check-version.outputs.status != 'up-to-date' }}
       kernel-version: ${{ steps.check-version.outputs.kernel-version }}
       proxmox-version: ${{ steps.check-version.outputs.proxmox-version }}
 
@@ -68,7 +73,7 @@ jobs:
         if [[ -e ${VERSION_AVAILABLE_FILE_PATH} ]]; then
             cur_abi_ver=`yq .version.kernel ${VERSION_AVAILABLE_FILE_PATH}`
         fi
-        echo "Current cached kernel ABI version for branch ${{ inputs.branch }}: ${cur_abi_ver}"
+        echo "Cached kernel ABI version for branch ${{ inputs.branch }}: ${cur_abi_ver}"
         proxmox_ver=`curl -s "https://git.proxmox.com/?p=pve-kernel-meta.git;a=shortlog;h=refs/heads/${{ inputs.branch }}" | \
             grep -oP "bump version to \K[^<]*" | head -n 1`
         url="https://git.proxmox.com/?p=pve-kernel.git;a=shortlog;h=refs/heads/${{ inputs.branch }}"
@@ -76,13 +81,14 @@ jobs:
         ver=`grep -oP "bump version to \K[^<,]+" shortlog.html | head -n 1`
         abi_ver=`grep -oP "update ABI file for \K[^<,]+" shortlog.html | head -n 1`
         #kernel_ver="pve-kernel-${abi_ver}-${ver}"
+        echo "Current kernel version: ${ver} (ABI version: ${abi_ver})"
         if [[ ${abi_ver} == ${cur_abi_ver} ]]; then
-            echo "Kernel ABI version ${abi_ver} for branch ${{ inputs.branch }} is up to date. Checking latest built kernel..."
+            echo "Current kernel ABI version ${abi_ver} for branch ${{ inputs.branch }} is up to date. Checking latest built kernel..."
             built_abi_ver=""
             if [[ -e ${VERSION_BUILT_FILE_PATH} ]]; then
                 built_abi_ver=`yq .version.kernel ${VERSION_BUILT_FILE_PATH}`
             fi
-            echo "Current built kernel version for branch ${{ inputs.branch }}: ${built_abi_ver}"
+            echo "Last built kernel version for branch ${{ inputs.branch }}: ${built_abi_ver}"
             if [[ ${abi_ver} == ${built_abi_ver} ]]; then
                 echo "Built kernel ABI version ${abi_ver} for branch ${{ inputs.branch }} is up to date. Nothing to do."
                 echo "status=up-to-date" >> $GITHUB_OUTPUT
@@ -90,7 +96,7 @@ jobs:
                 echo "Built kernel ABI version and available kernel ABI version are out of sync. Will trigger a build..."
                 echo "kernel-version=${abi_ver}" >> $GITHUB_OUTPUT
                 echo "proxmox-version=${proxmox_ver}" >> $GITHUB_OUTPUT
-                echo "status=needs-update" >> $GITHUB_OUTPUT
+                echo "status=needs-build" >> $GITHUB_OUTPUT
             fi
         else
             echo "New kernel ABI version avaiable for branch ${{ inputs.branch }}: ${abi_ver}. Will trigger a build."
@@ -98,13 +104,13 @@ jobs:
             sudo echo -e "version:\n  proxmox: ${proxmox_ver}\n  kernel: ${abi_ver}" > ${VERSION_AVAILABLE_FILE_PATH}
             echo "kernel-version=${abi_ver}" >> $GITHUB_OUTPUT
             echo "proxmox-version=${proxmox_ver}" >> $GITHUB_OUTPUT
-            echo "status=needs-update" >> $GITHUB_OUTPUT
+            echo "status=save-kernel-version-and-build" >> $GITHUB_OUTPUT
         fi
         rm -f shortlog.html
 
     - name: Save new available kernel version
       continue-on-error: true
-      if: inputs.save-new-version && steps.check-version.outputs.status == 'needs-update'
+      if: inputs.save-new-version && steps.check-version.outputs.status == 'save-kernel-version-and-build'
       run: |
         git config --local user.email "github-actions@github.com"
         git config --local user.name "Github Actions"
@@ -112,6 +118,40 @@ jobs:
         git add config/**
         git commit -m 'Update available kernel version for branch ${{ inputs.branch }} to ${{ steps.check-version.outputs.kernel-version }}'
         git push
+
+    - name: Send new kernel version email
+      if: steps.check-version.outputs.status == 'save-kernel-version-and-build'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        # Specify connection via URL (replaces server_address, server_port, secure,
+        # username and password)
+        #
+        # Format:
+        #
+        #  * smtp://user:password@server:port
+        #  * smtp+starttls://user:password@server:port
+        connection_url: ${{ secrets.email_connection_url }}
+        subject: "[pve-kernel-builder] New kernel version detected"
+        to: ${{ secrets.email_recipients }}
+        from: "GitHub Workflow @ pve-kernel-builder <github-no-reply@github.com>"
+        html_body: |
+          New Proxmox kernel version **${{ steps.check-version.outputs.kernel-version }}** 
+          (Proxmox version **${{ steps.check-version.outputs.proxmox-version }}**) detected!
+
+          Check the new version by visiting the 
+          [workflow](https://github.com/${{ github.repository }}/actions/workflows/trigger-kernel-check.yml).
+        convert_markdown: true
+        # Optional priority: 'high', 'normal' (default) or 'low'
+        priority: high
+
+  debug-state:
+    name: Debug state
+    runs-on: ubuntu-latest
+    needs: check-for-new-kernel
+    steps:
+      - name: print state
+        run: |
+          echo "new-kernel-available: ${{ needs.check-for-new-kernel.outputs.new-kernel-available }}"
 
   build-kernel:
     name: Build new kernel
@@ -121,7 +161,7 @@ jobs:
     with:
       branch: ${{ inputs.branch }}
 
-  save-new-kernel-version:
+  save-built-kernel-version:
     name: Save new kernel version
     runs-on: ubuntu-latest
     needs: [check-for-new-kernel, build-kernel]
@@ -164,3 +204,33 @@ jobs:
       artifact-name: ${{ needs.build-kernel.outputs.artifacts-name }}
       kernel-version: ${{ needs.check-for-new-kernel.outputs.kernel-version }}
       proxmox-version: ${{ needs.check-for-new-kernel.outputs.proxmox-version }}
+
+  notify-new-release:
+    name: Notify of new kernel release
+    runs-on: ubuntu-latest
+    needs: [check-for-new-kernel, release-new-kernel]
+    if: needs.release-new-kernel.result == 'success'
+    steps:
+    - name: Send new kernel version email
+      uses: dawidd6/action-send-mail@v3
+      with:
+        # Specify connection via URL (replaces server_address, server_port, secure,
+        # username and password)
+        #
+        # Format:
+        #
+        #  * smtp://user:password@server:port
+        #  * smtp+starttls://user:password@server:port
+        connection_url: ${{ secrets.email_connection_url }}
+        subject: "[pve-kernel-builder] New Release Available for Publishing"
+        to: ${{ secrets.email_recipients }}
+        from: "GitHub Workflow @ pve-kernel-builder <github-no-reply@github.com>"
+        html_body: |
+          A new draft release for Proxmox kernel version **${{ needs.check-for-new-kernel.outputs.kernel-version }}**
+          (Proxmox version **${{ needs.check-for-new-kernel.outputs.proxmox-version }}**) is available!
+
+          Please go to the [releases page](https://github.com/${{ github.repository }}/releases)
+          and publish it.
+        convert_markdown: true
+        # Optional priority: 'high', 'normal' (default) or 'low'
+        priority: high

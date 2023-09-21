@@ -1,0 +1,39 @@
+name: Test Workflow
+
+on:
+  workflow_dispatch:
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  KERNEL_VERSION: 5.15.116-1-pve
+  PROXMOX_VERSION: 7.4-6
+
+jobs:
+  test:
+    name: This is a test job
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Send new kernel version email
+      uses: dawidd6/action-send-mail@v3
+      with:
+        # Specify connection via URL (replaces server_address, server_port, secure,
+        # username and password)
+        #
+        # Format:
+        #
+        #  * smtp://user:password@server:port
+        #  * smtp+starttls://user:password@server:port
+        connection_url: ${{ secrets.EMAIL_NOTIFICATION_CONNECTION }}
+        subject: "[pve-kernel-builder] New kernel version detected"
+        to: ${{ secrets.EMAIL_NOTIFICATION_RECIPIENTS }}
+        from: "GitHub Workflow @ pve-kernel-builder <github-no-reply@github.com>"
+        html_body: |
+          New Proxmox kernel version **${{ env.KERNEL_VERSION }}**
+          (Proxmox version **${{ env.PROXMOX_VERSION }}**) detected!
+
+          Check the new version by visiting the
+          [workflow](https://github.com/${{ github.repository }}/actions/workflows/trigger-kernel-check.yml).
+        convert_markdown: true
+        # Optional priority: 'high', 'normal' (default) or 'low'
+        priority: high
